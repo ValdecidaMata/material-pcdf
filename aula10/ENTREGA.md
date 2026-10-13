@@ -8,16 +8,16 @@
 
 | Regra | Tema | Quem verifica (função Python / agente / humano) | Por quê | Onde foi implementada (preencha na Etapa 11) |
 |---|---|---|---|---|
-| N1 | férias | | | |
-| N2 | férias | | | |
-| N3 | férias | | | |
-| N4 | prazos | | | |
-| N5 | escala | | | |
-| N6 | abono | | | |
-| N7 | diária | | | |
-| N8 | aprovação | | | |
-| N9 | saúde | | | |
-| N10 | dados | | | |
+| N1 | férias | Função Python | É conta: comparar dias com `saldo_ferias_dias`, contar períodos (≤ 3) e checar o mínimo de 5 dias. Resultado exato e determinístico, sem interpretação. | |
+| N2 | férias | Função Python | É conta: dias vendidos ≤ 10, gozados + vendidos ≤ saldo e valor = `salario_base / 30`. Valor em dinheiro não pode depender do LLM (o salário é dado restrito). | |
+| N3 | férias | Função Python (+ API/cache de feriados) | É calendário: ver se o início cai numa quinta/sexta ou nos 2 dias antes de um feriado. Basta o dia da semana e a lista de feriados. | |
+| N4 | prazos | Função Python | É conta de datas: diferença entre a data do pedido e o início (30 dias, 2 dias úteis ou 10 dias, conforme o tipo). | |
+| N5 | escala | Função Python | É conta: afastados da equipe que se sobrepõem ao período vs. limite `max(1, floor(30% da equipe))`, sem contar o próprio servidor. (O agente de escala só **sugere** outro período; quem decide se há conflito é o código.) | |
+| N6 | abono | Função Python | É conta/calendário: 1 dia útil, não é fim de semana nem feriado, e `abonos_restantes` > 0. | |
+| N7 | diária | Função Python (+ API de cotação) | É conta: 1 diária por pernoite + ½ no retorno × valor de `diarias.csv`; no exterior, × cotação do USD do dia. O agente financeiro pode explicar, mas o número vem da função. | |
+| N8 | aprovação | Humano (chefia imediata) | Deferir férias/diária é **decisão de alguém** com responsabilidade, não conta nem interpretação: o fluxo pausa e espera a chefia. A parte objetiva (abono dispensa chefia; quem aprova é a chefia do cadastro e nunca o próprio servidor) é checada em Python no servidor MCP. | |
+| N9 | saúde | Função Python (guardrail de entrada, regex) + agente classificador de apoio | A parte objetiva (CID, laudo) é pega por regex **antes** de qualquer agente ver o texto: dado de saúde não pode nem chegar ao LLM. Como nem todo pedido de saúde tem CID ("estou com depressão"), o classificador de escopo (agente) cobre o que a regex não pega. O pedido é bloqueado e orientado à junta médica. | |
+| N10 | dados | Função Python (guardrail de saída) | Antes de registrar, o despacho passa por uma validação determinística (regex de CPF/CID). Não se confia só na instrução do agente redator: a checagem final tem que ser garantida, não provável. | |
 
 ## Etapa 11: os 12 casos
 
@@ -78,17 +78,3 @@ Compare **caminho e estado**, não o texto do despacho.
 | Arquivo / trecho | Exemplo das aulas em que me baseei | O que precisei adaptar |
 |---|---|---|
 | | | |
-
-
-| Regra | Tema | Quem verifica (função Python / agente / humano) | Por quê | Onde foi implementada (preencha na Etapa 11) |
-|---|---|---|---|---|
-| N1 | férias | função Python | conta: dias corridos >= 5 e <= saldo | |
-| N2 | férias | função Python | conta: dias + vendidos <= saldo, vendidos <= 10 | |
-| N3 | férias | função Python | consulta de calendário (feriados e fim de semana) | |
-| N4 | prazos | função Python | diferença entre datas (dias corridos ou úteis) | |
-| N5 | escala | função Python | contagem de afastados da equipe no período x limite de 30% | |
-| N6 | abono | função Python | dia útil e saldo de abonos | |
-| N7 | diária | função Python | conta (diárias + meia diária, câmbio); o agente Financeiro só explica | |
-| N8 | aprovação | humano | é decisão da chefia; o server só confere se o aprovador é a chefia certa | |
-| N9 | saúde | função Python (guardrail) | regex de CID/CPF barra antes de qualquer agente ver o texto; o classificador (agente) cobre o que a regex não pega | |
-| N10 | dados | função Python (guardrail de saída) | regex no despacho antes de gravar | |
