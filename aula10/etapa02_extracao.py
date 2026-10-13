@@ -109,10 +109,15 @@ INSTRUCOES_EXTRATOR = (
 )
 
 
+USO = {"tokens": 0}  # ETAPA 10: tokens da última chamada de extrair()
+
+
 def extrair(texto: str) -> Pedido:
     # ETAPA 2.3 -- rode criar_extrator(INSTRUCOES_EXTRATOR) com Runner.run_sync e devolva final_output
     #   (é um objeto Pedido, não texto!)
-    return Runner.run_sync(criar_extrator(INSTRUCOES_EXTRATOR), texto).final_output
+    resultado = Runner.run_sync(criar_extrator(INSTRUCOES_EXTRATOR), texto)
+    USO["tokens"] = resultado.context_wrapper.usage.total_tokens  # ETAPA 10: o grafo lê para a métrica
+    return resultado.final_output
 
 
 # ------------------------------------------------------------------ 🆕 A: votação (OPCIONAL, bônus)

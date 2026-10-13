@@ -88,9 +88,14 @@ def criar_classificador() -> Agent:
     )
 
 
+USO = {"tokens": 0}  # ETAPA 10: tokens da última chamada de nota_escopo()
+
+
 def nota_escopo(texto: str) -> tuple[float, str]:
     # ETAPA 3.3 -- rode o classificador (Runner.run_sync) e devolva (nota, motivo)
-    avaliacao = Runner.run_sync(criar_classificador(), texto).final_output
+    resultado = Runner.run_sync(criar_classificador(), texto)
+    USO["tokens"] = resultado.context_wrapper.usage.total_tokens  # ETAPA 10: o grafo lê para a métrica
+    avaliacao = resultado.final_output
     return avaliacao.nota, avaliacao.motivo
 
 

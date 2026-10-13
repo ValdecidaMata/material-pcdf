@@ -33,7 +33,19 @@ def medido(nome: str, no):
     #      e, se o nó devolveu, "tokens" e "fonte_feriados";
     #   3. devolve o MESMO dicionário que o nó devolveu.
     #   Use @functools.wraps(no) para o nome do nó continuar o mesmo.
-    return no  # pass-through: troque pelo wrapper
+    @functools.wraps(no)
+    def embrulhado(estado):
+        inicio = time.perf_counter()
+        saida = no(estado)
+        linha = {"thread_id": estado.get("thread_id"), "no": nome, "segundos": round(time.perf_counter() - inicio, 2)}
+        for chave in ("tokens", "fonte_feriados", "eventos"):
+            if isinstance(saida, dict) and saida.get(chave):
+                linha[chave] = saida[chave]
+        with ARQUIVO_METRICAS.open("a", encoding="utf-8") as arquivo:
+            arquivo.write(json.dumps(linha, ensure_ascii=False) + "\n")
+        return saida
+
+    return embrulhado
 
 
 def resumo(thread_id: str) -> dict:

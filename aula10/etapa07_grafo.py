@@ -62,9 +62,10 @@ import etapa06_agentes as agentes
 from etapa05_cliente_mcp import chamar_mcp
 from dados.casos import CASOS
 from dados_rh import SAIDAS
-from etapa02_extracao import extrair, extrair_com_votacao
+from etapa02_extracao import USO as USO_EXTRATOR, extrair, extrair_com_votacao
 from etapa04_ferramentas import cotacao_usd_brl, gerar_protocolo, rodar_com_limites_sync
-from etapa03_guardrails import LIMIAR, MENSAGENS, encontrar_dado_sensivel, nota_escopo
+from etapa03_guardrails import LIMIAR, MENSAGENS, USO as USO_CLASSIFICADOR, encontrar_dado_sensivel, nota_escopo
+from etapa10_governanca import Governanca
 from etapa10_observabilidade import medido
 from provedor import configurar
 from etapa06_regras import precisa_chefia, resumo_periodo, violacoes_objetivas
@@ -107,11 +108,14 @@ class Estado(TypedDict, total=False):
     protocolo: str
     resultado: str                # o desfecho, para a tabela da Etapa 11
     caminho: Annotated[list[str], operator.add]   # cada nó só ACRESCENTA o próprio nome
+    tokens: Annotated[int, operator.add]          # ETAPA 10: tokens gastos (os ramos paralelos SOMAM)
+    eventos: Annotated[list[dict], operator.add]  # ETAPA 10.1: o que o hook registrou (tool, argumentos, tokens)
+    fonte_feriados: str                           # ETAPA 10: brasilapi ou arquivo_local
 
 
 # ------------------------------------------------------------------ nós PRONTOS
 def receber(estado: Estado) -> dict:
-    return {"texto": estado["texto"].strip(), "tentativas": 0, "rejeicoes": 0, "violacoes": [],
+    return {"texto": estado["texto"].strip(), "tentativas": 0, "rejeicoes": 0, "violacoes": [], "tokens": 0,
             "erro_validacao": "", "feedback_chefia": "", "caminho": ["receber"]}
 
 
@@ -141,11 +145,13 @@ def proteger_entrada(estado: Estado) -> dict:
     sensivel = encontrar_dado_sensivel(texto)  # regex ANTES do LLM: CPF/CID nunca chegam ao classificador
     if sensivel:
         return {"bloqueado": True, "motivo_bloqueio": MENSAGENS[sensivel], "caminho": ["proteger_entrada"]}
+    USO_CLASSIFICADOR["tokens"] = 0
     nota, _motivo = nota_escopo(texto)
+    tokens = USO_CLASSIFICADOR["tokens"]
     if nota >= LIMIAR:
         return {"bloqueado": True, "motivo_bloqueio": MENSAGENS["fora_do_escopo"], "nota_escopo": nota,
-                "caminho": ["proteger_entrada"]}
-    return {"bloqueado": False, "nota_escopo": nota, "caminho": ["proteger_entrada"]}
+                "tokens": tokens, "caminho": ["proteger_entrada"]}
+    return {"bloqueado": False, "nota_escopo": nota, "tokens": tokens, "caminho": ["proteger_entrada"]}
 
 
 def rotear_entrada(estado: Estado) -> str:
@@ -178,8 +184,10 @@ def no_extrair(estado: Estado) -> dict:
         import asyncio
         pedido, divergencia, _votos = asyncio.run(extrair_com_votacao(estado["texto"]))
     else:
+        USO_EXTRATOR["tokens"] = 0
         pedido = extrair(estado["texto"])
-    return {"pedido": pedido.model_dump(mode="json"), "divergencia": divergencia, "caminho": ["extrair"]}
+    return {"pedido": pedido.model_dump(mode="json"), "divergencia": divergencia,
+            "tokens": USO_EXTRATOR["tokens"], "caminho": ["extrair"]}
 
 
 def rotear_extracao(estado: Estado) -> str:
@@ -212,7 +220,8 @@ def calcular_periodo(estado: Estado) -> dict:
     periodo = resumo_periodo(pedido["data_inicio"], pedido["data_fim"])
     escala = chamar_mcp("consultar_escala", {"equipe": estado["servidor"]["equipe"],
                                              "inicio": pedido["data_inicio"], "fim": pedido["data_fim"]})
-    return {"periodo": periodo, "escala": escala, "caminho": ["calcular_periodo"]}
+    return {"periodo": periodo, "escala": escala, "fonte_feriados": periodo["fonte_feriados"],
+            "caminho": ["calcular_periodo"]}
 
 
 # ------------------------------------------------------------------ ETAPA 7.3: paralelismo
@@ -222,20 +231,28 @@ def _fatos(estado: Estado) -> str:
             f"PERÍODO: {estado['periodo']}\nESCALA DA EQUIPE: {estado['escala']}")
 
 
+def _rodar(agente, entrada: str) -> dict:
+    """ETAPA 10.1 -- roda um agente com o hook Governanca e devolve a saída + o que medir (tokens e eventos)."""
+    hook = Governanca(verbose=False)
+    resultado = rodar_com_limites_sync(agente, entrada, hooks=hook)
+    return {"saida": resultado.final_output, "tokens": resultado.context_wrapper.usage.total_tokens,
+            "eventos": hook.eventos}
+
+
 def no_normas(estado: Estado) -> dict:
     # ETAPA 7.3 -- rode agentes.criar_normas() com rodar_com_limites_sync(_fatos(estado)) e escreva SÓ
     #   {"parecer_normas": ..., "caminho": ["normas"]}. Os três especialistas rodam no MESMO passo.
     #   Referência: aula7/exemplos/08_paralelismo/main.py (cada ramo escreve no SEU campo)
-    parecer = rodar_com_limites_sync(agentes.criar_normas(), _fatos(estado)).final_output
-    return {"parecer_normas": parecer, "caminho": ["normas"]}
+    r = _rodar(agentes.criar_normas(), _fatos(estado))
+    return {"parecer_normas": r["saida"], "tokens": r["tokens"], "eventos": r["eventos"], "caminho": ["normas"]}
 
 
 def no_escala(estado: Estado) -> dict:
     # ETAPA 7.3 -- idem, agentes.criar_escala() -> {"parecer_escala": ..., "caminho": ["escala"]}
     if estado["pedido"]["tipo"] not in ("ferias", "abono"):  # N5 só vale para afastamentos (diária não afasta)
         return {"parecer_escala": "não se aplica", "caminho": ["escala"]}
-    parecer = rodar_com_limites_sync(agentes.criar_escala(), _fatos(estado)).final_output
-    return {"parecer_escala": parecer, "caminho": ["escala"]}
+    r = _rodar(agentes.criar_escala(), _fatos(estado))
+    return {"parecer_escala": r["saida"], "tokens": r["tokens"], "eventos": r["eventos"], "caminho": ["escala"]}
 
 
 def no_financeiro(estado: Estado) -> dict:
@@ -259,8 +276,8 @@ def no_financeiro(estado: Estado) -> dict:
         entrada = _fatos(estado)
     else:  # abono ou férias sem venda: não há valor (e o salário nem é consultado)
         return {"parecer_financeiro": "não se aplica", "caminho": ["financeiro"]}
-    parecer = rodar_com_limites_sync(agentes.criar_financeiro(), entrada).final_output
-    return {"parecer_financeiro": parecer, "caminho": ["financeiro"]}
+    r = _rodar(agentes.criar_financeiro(), entrada)
+    return {"parecer_financeiro": r["saida"], "tokens": r["tokens"], "eventos": r["eventos"], "caminho": ["financeiro"]}
 
 
 def consolidar(estado: Estado) -> dict:
@@ -290,8 +307,8 @@ def redigir_despacho(estado: Estado) -> dict:
         entrada += f"\nFEEDBACK DA VALIDAÇÃO (corrija): {estado['erro_validacao']}\nDESPACHO ANTERIOR: {estado.get('despacho')}"
     if estado.get("feedback_chefia"):
         entrada += f"\nFEEDBACK DA CHEFIA (corrija): {estado['feedback_chefia']}\nDESPACHO ANTERIOR: {estado.get('despacho')}"
-    despacho = rodar_com_limites_sync(agentes.criar_redator(), entrada).final_output
-    return {"despacho": despacho, "caminho": ["redigir_despacho"]}
+    r = _rodar(agentes.criar_redator(), entrada)
+    return {"despacho": r["saida"], "tokens": r["tokens"], "caminho": ["redigir_despacho"]}
 
 
 def problemas_do_despacho(despacho: str, pedido: dict) -> list[str]:
@@ -386,7 +403,12 @@ def registrar(estado: Estado) -> dict:
         "aprovador": estado.get("aprovador") or "sistema", "despacho": estado["despacho"],
         "token": os.getenv("TOKEN_REGISTRO", ""), "thread_id": estado["thread_id"],
     })
-    resultado = "registrado" if resposta.get("sucesso") else f"negado_pelo_server: {resposta.get('erro')}"
+    if resposta.get("duplicado"):
+        resultado = "duplicado"  # protocolo já gravado: o server não grava de novo (idempotência)
+    elif resposta.get("sucesso"):
+        resultado = "registrado"
+    else:
+        resultado = f"negado_pelo_server: {resposta.get('erro')}"
     return {"protocolo": protocolo, "decisao": decisao, "resultado": resultado, "caminho": ["registrar"]}
 
 
